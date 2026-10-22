@@ -1,0 +1,6 @@
+__pycache__/
+corpus/
+out/
+*.pyc
+venv/
+.venv/

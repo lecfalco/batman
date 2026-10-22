@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Fault Lines: Fix-First Map</title>
+<style>
+:root{--ground:#e4eaec;--ink:#14242c;--mute:#586b74;--rule:#bccacf;--panel:#f2f5f6;--warn:#8f3a0f;
+--slab:Rockwell,"Roboto Slab","Zilla Slab",Georgia,serif;--sans:"Gill Sans","Gill Sans MT",Candara,"Segoe UI",system-ui,sans-serif}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--ground);color:var(--ink);font:15px/1.45 var(--sans)}
+main{display:grid;grid-template-columns:1fr 372px;height:100vh}
+#map{position:relative;min-width:0}canvas{display:block;width:100%;height:100%;cursor:crosshair}
+aside{background:var(--panel);border-left:1px solid var(--rule);overflow:auto;padding:20px 20px 28px}
+h1{font:700 26px/1.1 var(--slab);margin:0 0 4px}h2{font:700 15px var(--slab);margin:22px 0 6px}
+p{margin:0 0 8px}.mute{color:var(--mute)}.big{font:600 17px/1.35 var(--slab)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+button{font:600 14px var(--sans);color:var(--ink);background:#fff;border:1.5px solid var(--ink);border-radius:3px;padding:7px 12px;cursor:pointer}
+button:hover{background:#e9f0f1}button[aria-pressed=true]{background:var(--ink);color:#fff}
+button:focus-visible{outline:3px solid #2b7fff;outline-offset:2px}
+.chip{display:inline-block;font:600 12px var(--sans);padding:1px 7px;border-radius:9px;margin-right:6px;border:1.5px solid}
+.checked{border-color:#2d6a4f;color:#2d6a4f}.hypothesis{border-color:#b45309;color:#b45309}.rejected{border-color:#9b1c1c;color:#9b1c1c}
+.card{border-top:1px solid var(--rule);padding:9px 0}.warn{background:#fdebd6;border:1.5px solid var(--warn);color:var(--warn);padding:8px 10px;border-radius:3px;font-weight:600}
+.bar{height:8px;background:#d5dfe2;border-radius:2px;position:relative;margin:3px 0 6px}.bar i{position:absolute;left:0;top:0;bottom:0;border-radius:2px}
+small{font-size:12.5px}code{font:12.5px ui-monospace,Menlo,Consolas,monospace;background:#e3eaec;padding:0 4px;border-radius:2px}
+@media(max-width:860px){main{grid-template-columns:1fr;height:auto}#map{height:72vh}aside{border-left:0;border-top:1px solid var(--rule)}}
+</style></head><body><main>
+<div id="map"><canvas id="c" role="img" aria-label="Map of files grouped by project, coloured by chance of being hit by a shock"></canvas></div>
+<aside id="panel"></aside></main>
+<script>
+const D=__DATA__;
+const $=s=>document.querySelector(s),cv=$("#c"),cx=cv.getContext("2d");
+const STOPS=[[0,"#d3dde0"],[.15,"#e9e7a6"],[.35,"#f1cd54"],[.55,"#f0933a"],[.75,"#d1432d"],[1,"#7a1230"]];
+const HOP=760,FONT_S='Rockwell,"Roboto Slab",Georgia,serif',FONT='"Gill Sans","Gill Sans MT",Candara,"Segoe UI",sans-serif';
+const rgb=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+function col(v){v=Math.max(0,Math.min(1,v));for(let i=1;i<STOPS.length;i++){if(v<=STOPS[i][0]){const[a,ca]=STOPS[i-1],[b,cb]=STOPS[i],t=(v-a)/(b-a),A=rgb(ca),B=rgb(cb);return`rgb(${A.map((x,k)=>Math.round(x+(B[k]-x)*t)).join()})`}}return STOPS[5][1]}
+const dark=(hex,f)=>`rgb(${rgb(hex).map(x=>Math.round(x*f)).join()})`;
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pct=v=>Math.round(v*100)+"%";
+let mode="sim",sel=-1,t0=null,playing=false,run=null,W=0,H=0,dpr=1,plateLayer=null,P=[];
+const epi=new Set(D.epicenter),reduce=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const maxHop=Math.max(...D.nodes.map(n=>n.hops));
+function layout(){dpr=devicePixelRatio||1;W=cv.clientWidth;H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr;
+ const top=112,bot=118,pad=46,aw=W-2*pad,ah=H-top-bot,asp=D.aspect||1;let w=aw,h=aw/asp;if(h>ah){h=ah;w=ah*asp}
+ const ox=(W-w)/2,oy=top+(ah-h)/2;P=D.nodes.map(n=>[ox+n.x*w,oy+n.y*h]);
+ const s=Math.min(w,h)/640;D.nodes.forEach((n,i)=>n.r=(3.4+1.5*Math.sqrt(n.exp))*Math.max(.8,Math.min(1.6,s*1.15)));
+ plateLayer=document.createElement("canvas");plateLayer.width=cv.width;plateLayer.height=cv.height;const p=plateLayer.getContext("2d");p.scale(dpr,dpr);
+ D.plates.forEach(pl=>{p.fillStyle=pl.color;D.nodes.forEach((n,i)=>{if(n.repo===pl.name){p.beginPath();p.arc(P[i][0],P[i][1],Math.max(34,Math.min(w,h)*.085),0,7);p.fill()}})});
+ draw()}
+function val(i){const n=D.nodes[i];if(run)return run.has(i)?.8:0;return mode==="sim"?n.hit:n.weak}
+function shown(i,now){const n=D.nodes[i];if(!playing)return true;if(n.hops<0&&!epi.has(i))return run?false:false;return now>=Math.max(0,n.hops)*HOP}
+function zig(a,b,k){const dx=b[0]-a[0],dy=b[1]-a[1],L=Math.hypot(dx,dy)||1,nx=-dy/L,ny=dx/L,m=Math.max(3,Math.floor(L/22));cx.moveTo(a[0],a[1]);
+ for(let j=1;j<m;j++){const f=j/m,o=((j*7+k*13)%5-2)*1.7;cx.lineTo(a[0]+dx*f+nx*o,a[1]+dy*f+ny*o)}cx.lineTo(b[0],b[1])}
+function draw(now=1e9){cx.setTransform(dpr,0,0,dpr,0,0);cx.fillStyle="#e4eaec";cx.fillRect(0,0,W,H);
+ cx.globalAlpha=.2;cx.drawImage(plateLayer,0,0,W,H);cx.globalAlpha=1;
+ D.edges.forEach((e,k)=>{if(e.cross)return;const a=P[e.a],b=P[e.b];const on=!playing||(now>=Math.max(0,D.nodes[e.b].hops)*HOP&&D.nodes[e.b].hops>=0);
+  cx.beginPath();cx.moveTo(a[0],a[1]);cx.lineTo(b[0],b[1]);cx.strokeStyle=`rgba(20,36,44,${on?.05+.30*e.p:.03})`;cx.lineWidth=.6+1.6*e.p;cx.stroke()});
+ D.edges.forEach((e,k)=>{if(!e.cross)return;const a=P[e.a],b=P[e.b],solid=e.basis==="model-judged";cx.beginPath();zig(a,b,k);
+  cx.setLineDash(solid?[]:[7,5]);cx.strokeStyle="rgba(20,36,44,.9)";cx.lineWidth=1.3+3.4*e.p;cx.stroke();cx.setLineDash([]);
+  cx.beginPath();zig(a,b,k);cx.strokeStyle="rgba(255,255,255,.55)";cx.lineWidth=.8;cx.stroke()});
+ const order=D.nodes.map((n,i)=>i).sort((a,b)=>val(a)-val(b));
+ order.forEach(i=>{const n=D.nodes[i],[x,y]=P[i],vis=shown(i,now);const v=vis?val(i):0;
+  if(playing&&n.hops>=0&&vis){const age=now-Math.max(0,n.hops)*HOP;if(age<1100){const k=age/1100,big=n.hops<=0?170:80;cx.beginPath();cx.arc(x,y,n.r+k*big,0,7);cx.strokeStyle=`rgba(176,38,28,${.85*(1-k)*Math.min(1,val(i)+.3)})`;cx.lineWidth=3.4*(1-k)+.8;cx.stroke()}}
+  cx.beginPath();cx.arc(x,y,n.r,0,7);cx.fillStyle=col(v);cx.fill();cx.lineWidth=i===sel?3:1.2;cx.strokeStyle=i===sel?"#2b7fff":"rgba(20,36,44,.75)";cx.stroke();
+  if(epi.has(i)){cx.beginPath();cx.arc(x,y,n.r+5,0,7);cx.lineWidth=2.5;cx.strokeStyle="#14242c";cx.stroke();cx.beginPath();cx.arc(x,y,n.r+9,0,7);cx.lineWidth=1;cx.stroke()}});
+ labels();overlay()}
+function plateNames(){cx.textAlign="center";D.plates.forEach(pl=>{const idx=D.nodes.map((n,i)=>n.repo===pl.name?i:-1).filter(i=>i>=0),xs=idx.map(i=>P[i][0]),ys=idx.map(i=>P[i][1]);
+  const x=xs.reduce((s,q)=>s+q)/xs.length,y=Math.min(H-96,Math.max(...ys)+34),t=`${pl.name}, ${idx.length} files`;cx.font=`700 16px ${FONT_S}`;cx.lineWidth=4.5;cx.strokeStyle="rgba(228,234,236,.95)";cx.strokeText(t,x,y);cx.fillStyle=dark(pl.color,.55);cx.fillText(t,x,y)})}
+function labels(){plateNames();const boxes=[],want=[...epi].slice(0,2).concat(D.nodes.map((n,i)=>i).filter(i=>!epi.has(i)).sort((a,b)=>D.nodes[b].loss-D.nodes[a].loss).slice(0,10));if(sel>=0)want.unshift(sel);
+ cx.textAlign="left";cx.font=`600 12.5px ${FONT}`;want.forEach(i=>{const n=D.nodes[i],[x,y]=P[i],txt=n.label.split("/").slice(-2).join("/"),w=cx.measureText(txt).width,bx=x+n.r+5,by=y-8;
+  if(boxes.some(b=>bx<b[0]+b[2]&&bx+w>b[0]&&by<b[1]+b[3]&&by+14>b[1]))return;boxes.push([bx,by,w,14]);
+  cx.lineWidth=3.5;cx.strokeStyle="rgba(228,234,236,.92)";cx.strokeText(txt,bx,y+4);cx.fillStyle="#14242c";cx.fillText(txt,bx,y+4)})}
+function overlay(){cx.textAlign="left";cx.fillStyle="#14242c";cx.font=`700 28px ${FONT_S}`;cx.fillText("Fault Lines",24,42);
+ cx.font=`600 16px ${FONT_S}`;cx.fillText("What breaks if "+D.epicenter_name+" breaks",24,66);
+ cx.font=`14px ${FONT}`;cx.fillStyle="#586b74";const m=run?`One simulated quake: ${run.size} of ${D.nodes.length} files hit`:(mode==="sim"?`Chance of being hit, from ${D.runs.toLocaleString()} simulated quakes`:"Chance of being hit by the simple weakest-link rule");cx.fillText(m,24,86);
+ const cap=D.caption.match(/.{1,64}(\s|$)/g)||[];cx.font=`600 15px ${FONT_S}`;cx.fillStyle="#14242c";cap.slice(0,3).forEach((l,k)=>cx.fillText(l.trim(),24,H-78+k*20));
+ cx.font=`13px ${FONT}`;cx.fillStyle="#586b74";cx.fillText(D.offline?"OFFLINE STAND-IN, NOT GEMMA: sample picture only":`Gemma 4 judged ${D.judged} of ${D.cross} links between projects. Starting chances are assumptions.`,24,H-12);
+ const lx=W-250,ly=H-58;for(let i=0;i<220;i++){cx.fillStyle=col(i/219);cx.fillRect(lx+i,ly,1.2,12)}cx.strokeStyle="#14242c";cx.lineWidth=1;cx.strokeRect(lx,ly,220,12);
+ cx.fillStyle="#14242c";cx.font=`12.5px ${FONT}`;cx.textAlign="center";[0,.25,.5,.75,1].forEach(v=>cx.fillText(pct(v),lx+v*220,ly+27));cx.textAlign="left";cx.fillText("chance a file is hit",lx,ly-7);
+ cx.fillText("dashed crack = link not judged by Gemma",lx-40,ly-26)}
+function play(r){run=r;playing=!reduce;t0=null;if(!playing){draw();panel();return}requestAnimationFrame(function f(ts){t0??=ts;const now=ts-t0;draw(now);if(now<(maxHop+1)*HOP+1200)requestAnimationFrame(f);else{playing=false;draw()}});panel()}
+function pick(ev){const r=cv.getBoundingClientRect(),x=ev.clientX-r.left,y=ev.clientY-r.top;let b=-1,bd=18;P.forEach((p,i)=>{const d=Math.hypot(p[0]-x,p[1]-y);if(d<bd){bd=d;b=i}});sel=b;draw();panel()}
+cv.addEventListener("click",pick);addEventListener("resize",layout);
+function briefsHtml(){if(!D.briefs||!D.briefs.length)return"";
+ return `<h2>Where to contribute first</h2><p class="mute"><small>Files where a failure would reach the most other files and projects, so a fix there protects the most people. Numbers are computed by code under stated assumptions; the text is written by Gemma and checked.</small></p>`+
+ D.briefs.map((b,k)=>`<div class="card"><b>${k+1}. ${esc(b.title)}</b><br><small><code>${esc(b.file)}</code><br>If it fails, about ${b.downstream_files} other files are hit on average (${b.downstream_loss} exposure units); ${b.dependents} files use it directly${b.other_projects&&b.other_projects.length?"; other projects reached: "+esc(b.other_projects.join(", ")):""}. Difficulty: ${esc(b.difficulty||"?")}.</small>
+ <p><small>${esc(b.why_it_matters)}</small></p>
+ ${(b.findings&&b.findings.length)?"<small><b>Where:</b></small>"+b.findings.map(f=>`<p><small>line ${f.line??"?"}: <code>${esc(f.quote)}</code> <span class="mute">(${esc(f.severity)})</span></small></p>`).join(""):"<p><small class=\"mute\">No specific weakness found: add a test or docs.</small></p>"}
+ <details><small><summary>How to test, and draft pull request</summary><ol>${b.how_to_test.map(s=>`<li>${esc(s)}</li>`).join("")}</ol><b>${esc(b.draft_pr_title)}</b><br>${esc(b.draft_pr_body)}</small></details>
+ ${b.local?`<details><small><summary>${esc(b.local.language)}</summary>${esc(b.local.why_it_matters)}<ol>${b.local.how_to_test.map(s=>`<li>${esc(s)}</li>`).join("")}</ol><span class="mute">${esc(b.local.note)}</span></small></details>`:""}
+ <small class="mute">Brief by ${esc(b.source||"")}</small></div>`).join("")}
+function panel(){const n=sel>=0?D.nodes[sel]:null,A=D.assumptions;let h=`<h1>Fault Lines</h1><p class="mute">How far does a shock travel between connected projects?</p>`;
+ if(D.offline)h+=`<p class="warn">Offline stand-in in use. Judgements below are rule-based, not Gemma.</p>`;
+ h+=`<p class="big">${esc(D.caption)}</p><p class="mute"><small>Simulation: ${D.runs.toLocaleString()} runs, seed ${D.rng_seed}. Average loss ${D.expected_loss} exposure units; worst 5% of runs ${D.tail_loss}. Exposure units = functions and classes in a file, not money.</small></p>
+ <div class="row"><button id="m1" aria-pressed="${mode==="sim"&&!run}">Simulation</button><button id="m2" aria-pressed="${mode==="weak"&&!run}">Weakest-link rule</button></div>
+ <div class="row"><button id="rp">Replay the quake</button><button id="an">Another quake</button><button id="sv">Save picture</button></div>`;
+ h+=n?`<h2>${esc(n.repo)} / ${esc(n.label)}</h2><p>Simulation: <b>${pct(n.hit)}</b> <span class="mute">vs weakest-link rule ${pct(n.weak)}</span></p><div class="bar"><i style="width:${n.hit*100}%;background:${col(n.hit)}"></i></div>`+
+  D.edges.filter(e=>e.b===sel&&e.cross).map(e=>`<div class="card"><small><b>${esc(D.nodes[e.a].repo)}/${esc(D.nodes[e.a].label)}</b> feeds this file. Chance passed on: ${pct(e.p)} (${esc(e.basis)}${e.level?", Gemma says "+esc(e.level):""}${e.votes?`; votes ${esc(Object.entries(e.votes).map(([k,c])=>k+" "+c).join(", "))}, ${pct(e.agree||0)} agree${e.disagree?", model sizes disagree":""}`:""}).<br>${esc(e.why)}${e.quote?`<br><code>${esc(e.quote)}</code>`:""}</small></div>`).join(""):
+  `<p class="mute"><small>Click any dot to see why it is exposed.</small></p>`;
+ h+=briefsHtml();h+=`<h2>Protect first</h2>`+D.harden.map(r=>`<div class="card"><small><b>${esc(r.label)}</b> (${esc(r.repo)}): protecting it removes ${Math.round(100*r.loss_removed/r.loss_before)}% of the average loss</small></div>`).join("");
+ if(D.answers.length)h+=`<h2>Questions answered by Gemma, checked by code</h2>`+D.answers.map(a=>`<div class="card"><b>${esc(a.question)}</b>`+a.claims.map(c=>`<p><span class="chip ${c.status}">${c.status}</span><small>${esc(c.text)} <span class="mute">${c.evidence.join(", ")}</span>${c.issues.length?`<br><span class="mute">Problem: ${esc(c.issues.join("; "))}</span>`:""}</small></p>`).join("")+`</div>`).join("");
+ h+=`<h2>Assumptions you can change</h2><p class="mute"><small>Chance one use-site passes a shock: ${Object.entries(A.relation_prior).map(([k,v])=>k+" "+v).join(", ")}. Gemma levels: low ${A.level_p.low}, medium ${A.level_p.medium}, high ${A.level_p.high}. Ranking stayed the same in ${pct(D.sens.avg_overlap)} of top-${D.sens.top_n} picks when every chance was shifted by up to ${D.sens.wobble}. Model: ${esc(D.model)}.${D.jury&&D.jury.name?" Jury: "+esc(D.jury.name)+"; "+D.jury.low_agreement+" of "+D.jury.judged+" links had under 70% agreement.":""}</small></p>`;
+ $("#panel").innerHTML=h;
+ $("#m1").onclick=()=>{mode="sim";run=null;draw();panel()};$("#m2").onclick=()=>{mode="weak";run=null;draw();panel()};
+ $("#rp").onclick=()=>{mode="sim";play(null)};$("#an").onclick=()=>play(new Set(D.samples[Math.floor(Math.random()*D.samples.length)]));
+ $("#sv").onclick=()=>{const a=document.createElement("a");a.download="fault-lines.png";a.href=cv.toDataURL("image/png");a.click()}}
+layout();panel();setTimeout(()=>play(null),500);
+</script></body></html>
